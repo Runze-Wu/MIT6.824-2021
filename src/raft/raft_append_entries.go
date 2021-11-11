@@ -16,8 +16,8 @@ func (rf *Raft) getAppendLogs(server int) (prevLogIndex, prevLogTerm int, res []
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.lock("AppendEntries")
+	defer rf.unLock("AppendEntries")
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -39,10 +39,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // send heartBeat msg to the specified server
 //
 func (rf *Raft) sendHeartBeat(server int) {
-	rf.mu.Lock()
+	rf.lock("SendHeartBeat")
 	if rf.role != Leader {
 		VERBOSE("non-leader server %d, want to send heartbeat", rf.me)
-		rf.mu.Unlock()
+		rf.unLock("SendHeartBeat")
 		return
 	}
 	prevLogIndex, prevLogTerm, logs := rf.getAppendLogs(server)
@@ -54,12 +54,12 @@ func (rf *Raft) sendHeartBeat(server int) {
 		Entries:      logs,
 		LeaderCommit: rf.commitIndex,
 	}
-	rf.mu.Unlock()
+	rf.unLock("SendHeartBeat")
 
 	reply := &AppendEntriesReply{}
 	if rf.peers[server].Call("Raft.AppendEntries", args, reply) {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
+		rf.lock("GetAppendReply")
+		defer rf.unLock("GetAppendReply")
 		if rf.currentTerm != args.Term {
 			// we don't care about result of RPC
 			return
@@ -94,20 +94,20 @@ func (rf *Raft) heartBeatThreadMain() {
 		case <-rf.stopCh:
 			return
 		case <-rf.heartBeatTimer.C:
-			rf.mu.Lock()
+			rf.lock("ResetHBTimer")
 			rf.setHeartBeatTimer()
 			if rf.role != Leader {
 				return
 			}
-			rf.mu.Unlock()
+			rf.unLock("ResetHBTimer")
 			go rf.replicate()
 		}
 	}
 }
 
 func (rf *Raft) replicate() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.lock("Replicate")
+	defer rf.unLock("Replicate")
 	for i := range rf.peers {
 		if i != rf.me {
 			go rf.sendHeartBeat(i)

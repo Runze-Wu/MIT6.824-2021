@@ -115,13 +115,37 @@ type Raft struct {
 	electionTimer  *time.Timer   // election time-out timer
 	heartBeatTimer *time.Timer   // appendEntries timer
 
+	/* debug info record lock interval */
+	lockStart time.Time
+	lockEnd   time.Time
+	lockName  string
+}
+
+func (rf *Raft) lock(lockName string) {
+	rf.mu.Lock()
+	rf.lockStart = time.Now()
+	rf.lockName = lockName
+}
+
+func (rf *Raft) unLock(lockName string) {
+	rf.lockEnd = time.Now()
+	if rf.lockName != lockName {
+		ERROR("lock not matched for %s : %s", rf.lockName, lockName)
+	}
+	rf.lockName = ""
+	duration := rf.lockEnd.Sub(rf.lockStart)
+	if rf.lockName != "" && duration > MaxLockTime {
+		rf.printElectionState()
+		ERROR("lock too long:%s:%s", lockName, duration)
+	}
+	rf.mu.Unlock()
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.lock("GetState")
+	defer rf.unLock("GetState")
 	// Your code here (2A).
 	return rf.currentTerm, rf.role == Leader
 }
@@ -302,12 +326,19 @@ func (rf *Raft) printElectionState() {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
-
+	rf.lock("Start")
+	defer rf.unLock("Start")
+	index, term := rf.getLastLogIndexTerm()
+	index++
+	isLeader := rf.role == Leader
+	if isLeader {
+		rf.log = append(rf.log, Log{
+			EntryType: Data, Command: command,
+			Term: term, Index: index,
+		})
+		rf.matchIndex[rf.me] = index // keep its own match index
+	}
 	return index, term, isLeader
 }
 
@@ -346,27 +377,28 @@ func (rf *Raft) killed() bool {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-
-	// Your initialization code here (2A, 2B, 2C).
 	rand.Seed(time.Now().UTC().UnixNano()) // initialize rand seed for setting timer
-	rf.dead = 0
-	rf.role = Follower
-	rf.currentTerm = 0
-	rf.voteFor = -1
-	rf.log = make([]Log, 1) // first index is 1
-	rf.commitIndex = 0
-	rf.lastApplied = 0
-	rf.nextIndex = make([]int, len(peers))
-	rf.matchIndex = make([]int, len(peers))
-	rf.stopCh = make(chan bool)
-	rf.leaderId = -1
-	rf.applyCh = make(chan ApplyMsg)
-	rf.electionTimer = time.NewTimer(randomElectionTime())
-	rf.heartBeatTimer = time.NewTimer(HeartBeatTimeout)
+	rf := &Raft{
+		mu:             sync.Mutex{},
+		peers:          peers,
+		persister:      persister,
+		me:             me,
+		dead:           0,
+		role:           Follower,
+		currentTerm:    0,
+		voteFor:        -1,
+		log:            make([]Log, 1), // first index is 1
+		commitIndex:    0,
+		lastApplied:    0,
+		nextIndex:      make([]int, len(peers)),
+		matchIndex:     make([]int, len(peers)),
+		stopCh:         make(chan bool),
+		leaderId:       0,
+		applyCh:        applyCh,
+		electionTimer:  time.NewTimer(randomElectionTime()),
+		heartBeatTimer: time.NewTimer(HeartBeatTimeout),
+	}
+	// Your initialization code here (2A, 2B, 2C).
 	rf.stopHeartBeatTimer()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

@@ -7,8 +7,8 @@ import "time"
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.lock("RequestVote")
+	defer rf.unLock("RequestVote")
 	lastLogIndex, lastLogTerm := rf.getLastLogIndexTerm()
 	logIsOk := (args.LastLogTerm > lastLogTerm) ||
 		(args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
@@ -91,7 +91,7 @@ func (rf *Raft) ticker() {
 // candidate start a new election
 //
 func (rf *Raft) startNewElection() {
-	rf.mu.Lock()
+	rf.lock("StartNewElection")
 	NOTICE("server %d become candidate", rf.me)
 	rf.currentTerm++
 	rf.role = Candidate
@@ -108,7 +108,7 @@ func (rf *Raft) startNewElection() {
 		LastLogIndex: lastLogIndex,
 		LastLogTerm:  lastLogTerm,
 	}
-	rf.mu.Unlock() // unlock for more concurrency
+	rf.unLock("StartNewElection") // unlock for more concurrency
 
 	voteCount, threshold := 1, len(rf.peers)/2+1
 	replyCh := make(chan *RequestVoteReply, len(rf.peers)-1)
@@ -134,22 +134,22 @@ func (rf *Raft) startNewElection() {
 				voteCount++
 				//NOTICE("Got vote from server %d for term %d", reply.Server, rf.currentTerm)
 			} else {
-				rf.mu.Lock()
+				rf.lock("GetVote")
 				NOTICE("Vote denied by server %d for term %d", reply.Server, rf.currentTerm)
 				if rf.currentTerm < reply.Term {
 					NOTICE("Received RequestVote response from server %d in term %d "+
 						"(this server's term was %d)", reply.Server, reply.Term, rf.currentTerm)
 					rf.stepDown(reply.Term)
 				}
-				rf.mu.Unlock()
+				rf.unLock("GetVote")
 			}
 		}
 	}
 	NOTICE("got %d vote", voteCount)
 
-	rf.mu.Lock()
+	rf.lock("BecomeLeader")
 	rf.becomeLeader()
-	rf.mu.Unlock()
+	rf.unLock("BecomeLeader")
 }
 
 //
