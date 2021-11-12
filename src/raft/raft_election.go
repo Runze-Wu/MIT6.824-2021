@@ -9,7 +9,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.lock("RequestVote")
 	defer rf.unLock("RequestVote")
-	lastLogIndex, lastLogTerm := rf.getLastLogIndexTerm()
+	lastLogIndex := rf.getLastLogIndex()
+	lastLogTerm := rf.getLogByIndex(lastLogIndex).Term
 	logIsOk := (args.LastLogTerm > lastLogTerm) ||
 		(args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
 
@@ -101,7 +102,8 @@ func (rf *Raft) startNewElection() {
 	rf.setElectionTimer(electionDuration)
 	rf.stopHeartBeatTimer()
 	timer := time.After(electionDuration) // own timer
-	lastLogIndex, lastLogTerm := rf.getLastLogIndexTerm()
+	lastLogIndex := rf.getLastLogIndex()
+	lastLogTerm := rf.getLogByIndex(lastLogIndex).Term
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
@@ -162,13 +164,11 @@ func (rf *Raft) becomeLeader() {
 	}
 	NOTICE("Now leader %d for term %d", rf.me, rf.currentTerm)
 	rf.role = Leader
-	rf.leaderId = rf.me
 	rf.printElectionState()
 	rf.stopElectionTimer() // leader no need to election
 	rf.setHeartBeatTimer()
-	lastLogIndex, _ := rf.getLastLogIndexTerm()
 	for i := range rf.nextIndex {
-		rf.nextIndex[i] = lastLogIndex + 1
+		rf.nextIndex[i] = rf.getLastLogIndex() + 1
 		rf.matchIndex[i] = 0
 	}
 
@@ -178,7 +178,7 @@ func (rf *Raft) becomeLeader() {
 		Term:      rf.currentTerm,
 		Index:     rf.nextIndex[rf.me],
 	}) // append NOOP msg
-
+	rf.nextIndex[rf.me]++
 	go rf.heartBeatThreadMain() // periodically send HB msg
 	go rf.replicate()           // immediately send NOOP
 }
