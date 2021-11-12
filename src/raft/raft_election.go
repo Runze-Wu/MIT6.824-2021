@@ -172,13 +172,16 @@ func (rf *Raft) becomeLeader() {
 		rf.matchIndex[i] = 0
 	}
 
-	rf.log = append(rf.log, Log{
-		EntryType: Noop,
-		Command:   nil,
-		Term:      rf.currentTerm,
-		Index:     rf.nextIndex[rf.me],
-	}) // append NOOP msg
-	rf.nextIndex[rf.me]++
+	// we don't append NOOP msg because it will affect the log index
+	// but personally speaking, I think there is a better way to handle this
+	// The NOOP msg can be used to handle 'Phantom Reappearance'
+	//rf.log = append(rf.log, Log{
+	//	EntryType: Noop,
+	//	Command:   nil,
+	//	Term:      rf.currentTerm,
+	//	Index:     rf.nextIndex[rf.me],
+	//}) // append NOOP msg
+	//rf.nextIndex[rf.me]++
 	go rf.heartBeatThreadMain() // periodically send HB msg
 	go rf.replicate()           // immediately send NOOP
 }
