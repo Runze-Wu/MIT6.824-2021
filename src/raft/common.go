@@ -7,6 +7,7 @@ import (
 
 const (
 	Error   bool = true
+	Warning bool = true
 	Notice  bool = false
 	Verbose bool = false
 )
@@ -15,6 +16,13 @@ func ERROR(format string, v ...interface{}) {
 	if Error {
 		log.SetPrefix("ERROR: ")
 		log.Fatalf(fmt.Sprintf(format, v...))
+	}
+}
+
+func WARNING(format string, v ...interface{}) {
+	if Warning {
+		log.SetPrefix("WARNING: ")
+		log.Println(fmt.Sprintf(format, v...))
 	}
 }
 
