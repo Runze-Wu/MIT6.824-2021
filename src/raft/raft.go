@@ -111,6 +111,8 @@ type Raft struct {
 	/* Other state used for implementation */
 	stopCh         chan bool     // dead signal
 	applyCh        chan ApplyMsg // channel which send apply msg
+	notifyApplyCh  chan struct{} // channel which notify to send apply
+	applyTimer     *time.Timer   // apply msg timer
 	electionTimer  *time.Timer   // election time-out timer
 	heartBeatTimer *time.Timer   // appendEntries timer
 
@@ -261,7 +263,7 @@ func (rf *Raft) setHeartBeatTimer() {
 	rf.heartBeatTimer.Stop()
 	rf.heartBeatTimer.Reset(HeartBeatTimeout)
 
-	VERBOSE("server %d in term %d role %d start HB", rf.me, rf.currentTerm, rf.role)
+	//VERBOSE("server %d in term %d role %d start HB", rf.me, rf.currentTerm, rf.role)
 }
 
 //
@@ -270,7 +272,7 @@ func (rf *Raft) setHeartBeatTimer() {
 func (rf *Raft) stopHeartBeatTimer() {
 	rf.heartBeatTimer.Stop()
 
-	VERBOSE("server %d in term %d role %d stop HB", rf.me, rf.currentTerm, rf.role)
+	//VERBOSE("server %d in term %d role %d stop HB", rf.me, rf.currentTerm, rf.role)
 }
 
 //
@@ -338,7 +340,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.lock("Start")
 	defer rf.unLock("Start")
 	index := rf.getLastLogIndex()
-	term := rf.getLogByIndex(index).Term
+	term := rf.currentTerm
 	index++
 	isLeader := rf.role == Leader
 	if isLeader {
@@ -347,6 +349,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term: term, Index: index,
 		})
 		rf.matchIndex[rf.me] = index // keep its own match index
+		rf.nextIndex[rf.me] = index + 1
 	}
 	return index, term, isLeader
 }
@@ -371,6 +374,48 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+func (rf *Raft) applyThreadMain() {
+	for rf.killed() == false {
+		select {
+		case <-rf.stopCh:
+			return
+		case <-rf.applyTimer.C:
+			rf.notifyApplyCh <- struct{}{}
+		case <-rf.notifyApplyCh:
+			rf.startApply()
+		}
+	}
+}
+
+func (rf *Raft) startApply() {
+	rf.lock("StartApply")
+	var sendMsgs []ApplyMsg
+	rf.applyTimer.Reset(ApplyInterval)
+	if rf.commitIndex > rf.lastApplied {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			if rf.log[i].Index != i {
+				ERROR("send apply index not matched")
+			}
+			sendMsgs = append(sendMsgs, ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: rf.log[i].Index,
+			})
+
+		}
+	} else {
+		sendMsgs = make([]ApplyMsg, 0)
+	}
+	rf.unLock("StartApply")
+	for _, msg := range sendMsgs {
+		rf.applyCh <- msg
+		rf.lock("SendMsg")
+		VERBOSE("send applych idx:%d", msg.CommandIndex)
+		rf.lastApplied = msg.CommandIndex
+		rf.unLock("SendMsg")
+	}
 }
 
 //
@@ -403,6 +448,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		matchIndex:     make([]int, len(peers)),
 		stopCh:         make(chan bool),
 		applyCh:        applyCh,
+		notifyApplyCh:  make(chan struct{}, 100),
+		applyTimer:     time.NewTimer(ApplyInterval),
 		electionTimer:  time.NewTimer(randomElectionTime()),
 		heartBeatTimer: time.NewTimer(HeartBeatTimeout),
 	}
@@ -414,5 +461,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	// start send apply msg goroutine
+	go rf.applyThreadMain()
 	return rf
 }
