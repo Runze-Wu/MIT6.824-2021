@@ -110,7 +110,6 @@ type Raft struct {
 
 	/* Other state used for implementation */
 	stopCh         chan bool     // dead signal
-	leaderId       int           // current leader
 	applyCh        chan ApplyMsg // channel which send apply msg
 	electionTimer  *time.Timer   // election time-out timer
 	heartBeatTimer *time.Timer   // appendEntries timer
@@ -209,18 +208,27 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 //
-// get the last log entry's index and term
-// thread already own the lock
+// get the last log entry's index
 //
-func (rf *Raft) getLastLogIndexTerm() (int, int) {
-	return rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term
+func (rf *Raft) getLastLogIndex() int {
+	index := rf.log[len(rf.log)-1].Index
+	if len(rf.log)-1 != index {
+		ERROR("last index mismatched %d %d", len(rf.log)-1, index)
+	}
+	return index
 }
 
+//
+// get the first log entry's index
+//
 func (rf *Raft) getLogStartIndex() int {
-	ERROR("haven't implemented")
-	return -1
+	//ERROR("haven't implemented")
+	return 1 // log index start by 1
 }
 
+//
+// get the indexed log
+//
 func (rf *Raft) getLogByIndex(index int) Log {
 	return rf.log[index]
 }
@@ -329,7 +337,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	rf.lock("Start")
 	defer rf.unLock("Start")
-	index, term := rf.getLastLogIndexTerm()
+	index := rf.getLastLogIndex()
+	term := rf.getLogByIndex(index).Term
 	index++
 	isLeader := rf.role == Leader
 	if isLeader {
@@ -393,7 +402,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		nextIndex:      make([]int, len(peers)),
 		matchIndex:     make([]int, len(peers)),
 		stopCh:         make(chan bool),
-		leaderId:       0,
 		applyCh:        applyCh,
 		electionTimer:  time.NewTimer(randomElectionTime()),
 		heartBeatTimer: time.NewTimer(HeartBeatTimeout),
