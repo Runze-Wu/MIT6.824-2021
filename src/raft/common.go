@@ -81,6 +81,7 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term       int  // currentTerm, for leader to update itself
+	Success    bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	FirstIndex int  // the first log's index which has the same term as the conflict one
 }
