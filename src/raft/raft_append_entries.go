@@ -25,6 +25,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
+	reply.FirstIndex = rf.getLastLogIndex()
 	if args.Term < reply.Term {
 		VERBOSE("Caller(%d) is stale. Our term is %d, theirs is %d",
 			args.LeaderId, rf.currentTerm, args.Term)
@@ -47,6 +48,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PervLogIndex >= rf.getLogStartIndex() &&
 		rf.getLogByIndex(args.PervLogIndex).Term != args.PrevLogTerm {
 		VERBOSE("Rejecting AppendEntries RPC: terms don't agree")
+		term := rf.getLogByIndex(args.PervLogIndex).Term
+		for i := reply.FirstIndex - 1; i > rf.commitIndex; i-- {
+			if rf.getLogByIndex(i).Term == term {
+				reply.FirstIndex--
+			}
+		}
 		return // response was set to a rejection above
 	}
 
@@ -90,6 +97,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			ERROR("append RPC: commitIndex larger than log length")
 		}
 		VERBOSE("New commitIndex: %d", rf.commitIndex)
+		rf.notifyApplyCh <- struct{}{}
 	}
 
 	rf.setElectionTimer(randomElectionTime())
@@ -149,6 +157,9 @@ func (rf *Raft) sendHeartBeat(server int) {
 		} else {
 			if rf.nextIndex[server] > 1 {
 				rf.nextIndex[server]--
+			}
+			if reply.FirstIndex+1 < rf.nextIndex[server] {
+				rf.nextIndex[server] = reply.FirstIndex + 1
 			}
 		}
 	}
