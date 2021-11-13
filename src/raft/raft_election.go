@@ -35,6 +35,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = rf.currentTerm == args.Term && rf.voteFor == args.CandidateId
 	reply.Err = ok
 	reply.Server = rf.me
+	rf.persist()
 }
 
 //
@@ -97,6 +98,7 @@ func (rf *Raft) startNewElection() {
 	rf.currentTerm++
 	rf.role = Candidate
 	rf.voteFor = rf.me
+	rf.persist()
 	rf.printElectionState()
 	electionDuration := randomElectionTime()
 	rf.setElectionTimer(electionDuration)
@@ -127,23 +129,31 @@ func (rf *Raft) startNewElection() {
 		case <-timer:
 			return
 		case reply := <-replyCh:
+			rf.lock("GetElectionReply")
 			if reply.Err != ok {
+				rf.unLock("GetElectionReply")
 				go func() {
 					time.Sleep(10 * time.Millisecond)
 					rf.sendRequestVote(reply.Server, args, replyCh)
 				}()
+			} else if rf.role != Candidate || rf.currentTerm != args.Term {
+				VERBOSE("ignore RPC result")
+				// we don't care about result of RPC
+				rf.unLock("GetElectionReply")
+				return
 			} else if reply.VoteGranted {
 				voteCount++
-				//NOTICE("Got vote from server %d for term %d", reply.Server, rf.currentTerm)
+				NOTICE("Got vote from server %d for term %d", reply.Server, rf.currentTerm)
+				rf.unLock("GetElectionReply")
 			} else {
-				rf.lock("GetVote")
 				NOTICE("Vote denied by server %d for term %d", reply.Server, rf.currentTerm)
 				if rf.currentTerm < reply.Term {
 					NOTICE("Received RequestVote response from server %d in term %d "+
 						"(this server's term was %d)", reply.Server, reply.Term, rf.currentTerm)
 					rf.stepDown(reply.Term)
+					rf.persist()
 				}
-				rf.unLock("GetVote")
+				rf.unLock("GetElectionReply")
 			}
 		}
 	}
@@ -160,10 +170,12 @@ func (rf *Raft) startNewElection() {
 //
 func (rf *Raft) becomeLeader() {
 	if rf.role != Candidate {
+		rf.printElectionState()
 		ERROR("non-candidate server %d become leader", rf.me)
 	}
 	NOTICE("Now leader %d for term %d", rf.me, rf.currentTerm)
 	rf.role = Leader
+	rf.persist()
 	rf.printElectionState()
 	rf.stopElectionTimer() // leader no need to election
 	rf.setHeartBeatTimer()

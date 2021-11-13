@@ -26,6 +26,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.Success = false
 	reply.FirstIndex = rf.getLastLogIndex()
+	reply.ConflictTerm = rf.getLogByIndex(reply.FirstIndex).Term
 	if args.Term < reply.Term {
 		VERBOSE("Caller(%d) is stale. Our term is %d, theirs is %d",
 			args.LeaderId, rf.currentTerm, args.Term)
@@ -37,6 +38,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = args.Term
 	}
 	rf.stepDown(args.Term)
+	rf.persist()
 	rf.setElectionTimer(randomElectionTime())
 
 	// For an entry to fit into our log, it must not leave a gap.
@@ -47,10 +49,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.PervLogIndex >= rf.getLogStartIndex() &&
 		rf.getLogByIndex(args.PervLogIndex).Term != args.PrevLogTerm {
-		VERBOSE("Rejecting AppendEntries RPC: terms don't agree")
-		term := rf.getLogByIndex(args.PervLogIndex).Term
+		rf.printElectionState()
+		reply.FirstIndex, reply.ConflictTerm = args.PervLogIndex, rf.getLogByIndex(args.PervLogIndex).Term
+		VERBOSE("Rejecting AppendEntries RPC: terms don't agree %d:%d vs %d:%d",
+			reply.FirstIndex, reply.ConflictTerm, args.PervLogIndex, args.PrevLogTerm)
 		for i := reply.FirstIndex - 1; i > rf.commitIndex; i-- {
-			if rf.getLogByIndex(i).Term == term {
+			if rf.getLogByIndex(i).Term == reply.ConflictTerm {
 				reply.FirstIndex--
 			}
 		}
@@ -86,6 +90,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log = rf.log[:index]
 		}
 		rf.log = append(rf.log, args.Entries[i:]...)
+		rf.persist()
 	}
 
 	// Set our committed ID from the request's. In rare cases, this would make
@@ -96,6 +101,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.printElectionState()
 			ERROR("append RPC: commitIndex larger than log length")
 		}
+		rf.printElectionState()
 		VERBOSE("New commitIndex: %d", rf.commitIndex)
 		rf.notifyApplyCh <- struct{}{}
 	}
@@ -122,6 +128,7 @@ func (rf *Raft) sendHeartBeat(server int) {
 		Entries:      logs,
 		LeaderCommit: rf.commitIndex,
 	}
+	VERBOSE("AppendEntries RPC prevLogIndex %d prevLogTerm %d", prevLogIndex, prevLogTerm)
 	rf.unLock("SendHeartBeat")
 
 	reply := &AppendEntriesReply{}
@@ -141,6 +148,7 @@ func (rf *Raft) sendHeartBeat(server int) {
 			NOTICE("Received AppendEntries response from server %d in term %d "+
 				"(this server's term was %d)", server, reply.Term, rf.currentTerm)
 			rf.stepDown(reply.Term)
+			rf.persist()
 			return
 		}
 
@@ -161,6 +169,7 @@ func (rf *Raft) sendHeartBeat(server int) {
 			if reply.FirstIndex+1 < rf.nextIndex[server] {
 				rf.nextIndex[server] = reply.FirstIndex + 1
 			}
+			VERBOSE("decrease server %d's nextIndex to %d", server, rf.nextIndex[server])
 		}
 	}
 	return
