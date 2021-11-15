@@ -18,8 +18,6 @@ package raft
 //
 
 import (
-	"6.824/labgob"
-	"bytes"
 	"math/rand"
 	//	"bytes"
 	"sync"
@@ -56,9 +54,10 @@ type ApplyMsg struct {
 type EntryType int
 
 const (
-	Unknown EntryType = 0
-	Data    EntryType = 1
-	Noop    EntryType = 2
+	Unknown  EntryType = 0
+	Data     EntryType = 1
+	Noop     EntryType = 2
+	SnapShot EntryType = 3
 )
 
 type Log struct {
@@ -80,7 +79,6 @@ const (
 	ElectionTimeout  = time.Millisecond * 300 // election
 	HeartBeatTimeout = time.Millisecond * 150 // send no more than ten times per sec
 	ApplyInterval    = time.Millisecond * 100 // apply log
-	RPCTimeout       = time.Millisecond * 100 // periodically send rpc when send fails
 	MaxLockTime      = time.Millisecond * 10  // debug
 )
 
@@ -101,7 +99,7 @@ type Raft struct {
 	/* Persistent state */
 	currentTerm int   // latest term server has seen
 	voteFor     int   // candidateId that received vote in current term
-	log         []Log // log entries
+	log         []Log // log entries, index 0 store the snapshot info
 	/* Volatile state on all servers */
 	commitIndex int // index of the highest log entry known to be committed
 	lastApplied int // index of the highest log entry applied to state machine
@@ -154,63 +152,10 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 //
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
+// get the snapshot which stores lastIncluded index and term
 //
-func (rf *Raft) persist() {
-	// Your code here (2C).
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.voteFor)
-	e.Encode(rf.log)
-	rf.persister.SaveRaftState(w.Bytes())
-}
-
-//
-// restore previously persisted state.
-//
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (2C).
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
-	var currentTerm int
-	var voteFor int
-	var log []Log
-
-	if d.Decode(&currentTerm) != nil ||
-		d.Decode(&voteFor) != nil ||
-		d.Decode(&log) != nil {
-		ERROR("read persist failed")
-	} else {
-		rf.currentTerm = currentTerm
-		rf.voteFor = voteFor
-		rf.log = log
-	}
-}
-
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
+func (rf *Raft) getSnapshot() Log {
+	return rf.log[0]
 }
 
 //
@@ -218,8 +163,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 func (rf *Raft) getLastLogIndex() int {
 	index := rf.log[len(rf.log)-1].Index
-	if len(rf.log)-1 != index {
-		ERROR("last index mismatched %d %d", len(rf.log)-1, index)
+	if len(rf.log)-1+rf.getSnapshot().Index != index {
+		ERROR("last index mismatched logLen %d snapIndex %d storedIndex %d",
+			len(rf.log), rf.getSnapshot().Index, index)
 	}
 	return index
 }
@@ -228,23 +174,25 @@ func (rf *Raft) getLastLogIndex() int {
 // get the first log entry's index
 //
 func (rf *Raft) getLogStartIndex() int {
-	return 1 // log index start by 1
+	return rf.getSnapshot().Index
 }
 
 //
 // get the indexed log
 //
 func (rf *Raft) getLogByIndex(index int) Log {
-	return rf.log[index]
+	if index < rf.getLogStartIndex() {
+		ERROR("index %d, but startIdx %d", index, rf.getLogStartIndex())
+	}
+	return rf.log[index-rf.getLogStartIndex()]
 }
 
-func randomElectionTime() time.Duration {
-	return time.Duration(rand.Int())%ElectionTimeout + ElectionTimeout
+func (rf *Raft) getIdx(index int) int {
+	return index - rf.getLogStartIndex()
 }
 
 //
 // reset the electionTimer
-// thread already own the lock
 //
 func (rf *Raft) setElectionTimer(d time.Duration) {
 	rf.electionTimer.Stop()
@@ -260,13 +208,10 @@ func (rf *Raft) stopElectionTimer() {
 
 //
 // reset the heartBeatTimers
-// thread already own the lock
 //
 func (rf *Raft) setHeartBeatTimer() {
 	rf.heartBeatTimer.Stop()
 	rf.heartBeatTimer.Reset(HeartBeatTimeout)
-
-	//VERBOSE("server %d in term %d role %d start HB", rf.me, rf.currentTerm, rf.role)
 }
 
 //
@@ -274,13 +219,10 @@ func (rf *Raft) setHeartBeatTimer() {
 //
 func (rf *Raft) stopHeartBeatTimer() {
 	rf.heartBeatTimer.Stop()
-
-	//VERBOSE("server %d in term %d role %d stop HB", rf.me, rf.currentTerm, rf.role)
 }
 
 //
 // meet new term change server's role to follower
-// thread already own the lock
 //
 func (rf *Raft) stepDown(newTerm int) {
 	if newTerm < rf.currentTerm {
@@ -308,7 +250,6 @@ func (rf *Raft) stepDown(newTerm int) {
 
 //
 // print server's useful state info
-// thread already own the lock
 //
 func (rf *Raft) printElectionState() {
 	s := ""
@@ -320,8 +261,9 @@ func (rf *Raft) printElectionState() {
 	case Leader:
 		s = "LEADER"
 	}
-	NOTICE("server=%d, term=%d, role=%s, vote=%d",
-		rf.me, rf.currentTerm, s, rf.voteFor)
+	NOTICE("server=%d, term=%d, role=%s, vote=%d, "+
+		"commit=%d, applied=%d, snap=%v",
+		rf.me, rf.currentTerm, s, rf.voteFor, rf.commitIndex, rf.lastApplied, rf.getSnapshot())
 }
 
 //
@@ -399,15 +341,15 @@ func (rf *Raft) startApply() {
 	rf.applyTimer.Reset(ApplyInterval)
 	if rf.commitIndex > rf.lastApplied {
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			if rf.log[i].Index != i {
+			idx := rf.getIdx(i)
+			if rf.log[idx].Index != i {
 				ERROR("send apply index not matched")
 			}
 			sendMsgs = append(sendMsgs, ApplyMsg{
 				CommandValid: true,
-				Command:      rf.log[i].Command,
-				CommandIndex: rf.log[i].Index,
+				Command:      rf.log[idx].Command,
+				CommandIndex: rf.log[idx].Index,
 			})
-
 		}
 	} else {
 		sendMsgs = make([]ApplyMsg, 0)
