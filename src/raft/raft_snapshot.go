@@ -117,11 +117,7 @@ func (rf *Raft) SendSnapshot(server int) {
 			// we don't care about result of RPC
 			return
 		}
-		if rf.role != Leader {
-			// Since we were leader in this term before, we must still be leader in
-			// this term.
-			ERROR("server %d isn't leader", rf.me)
-		}
+		assert(rf.role == Leader, "server %d isn't leader", rf.me)
 		if reply.Term > rf.currentTerm {
 			NOTICE("Received InstallSnapshot response from server %d in term %d "+
 				"(this server's term was %d)", server, reply.Term, rf.currentTerm)

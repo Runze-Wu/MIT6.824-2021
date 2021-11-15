@@ -130,9 +130,7 @@ func (rf *Raft) lock(lockName string) {
 
 func (rf *Raft) unLock(lockName string) {
 	rf.lockEnd = time.Now()
-	if rf.lockName != lockName {
-		ERROR("lock not matched for %s : %s", rf.lockName, lockName)
-	}
+	assert(rf.lockName == lockName, "lock not matched for %s : %s", rf.lockName, lockName)
 	rf.lockName = ""
 	duration := rf.lockEnd.Sub(rf.lockStart)
 	if rf.lockName != "" && duration > MaxLockTime {
@@ -163,10 +161,8 @@ func (rf *Raft) getSnapshot() Log {
 //
 func (rf *Raft) getLastLogIndex() int {
 	index := rf.log[len(rf.log)-1].Index
-	if len(rf.log)-1+rf.getSnapshot().Index != index {
-		ERROR("last index mismatched logLen %d snapIndex %d storedIndex %d",
-			len(rf.log), rf.getSnapshot().Index, index)
-	}
+	assert(len(rf.log)-1+rf.getSnapshot().Index == index,
+		"last index mismatched logLen %d snapIndex %d storedIndex %d", len(rf.log), rf.getSnapshot().Index, index)
 	return index
 }
 
@@ -181,12 +177,13 @@ func (rf *Raft) getLogStartIndex() int {
 // get the indexed log
 //
 func (rf *Raft) getLogByIndex(index int) Log {
-	if index < rf.getLogStartIndex() {
-		ERROR("index %d, but startIdx %d", index, rf.getLogStartIndex())
-	}
+	assert(index >= rf.getLogStartIndex(), "index %d, but startIdx %d", index, rf.getLogStartIndex())
 	return rf.log[index-rf.getLogStartIndex()]
 }
 
+//
+// get the idx point to the index's entry
+//
 func (rf *Raft) getIdx(index int) int {
 	return index - rf.getLogStartIndex()
 }
@@ -225,10 +222,7 @@ func (rf *Raft) stopHeartBeatTimer() {
 // meet new term change server's role to follower
 //
 func (rf *Raft) stepDown(newTerm int) {
-	if newTerm < rf.currentTerm {
-		ERROR("server currentTerm %d is bigger than newTerm %d",
-			rf.currentTerm, newTerm)
-	}
+	assert(newTerm >= rf.currentTerm, "server currentTerm %d is bigger than newTerm %d", rf.currentTerm, newTerm)
 	isLeader := rf.role == Leader
 	if newTerm > rf.currentTerm {
 		VERBOSE("server %d, stepDown(%d)", rf.me, newTerm)
@@ -342,9 +336,7 @@ func (rf *Raft) startApply() {
 	if rf.commitIndex > rf.lastApplied {
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			idx := rf.getIdx(i)
-			if rf.log[idx].Index != i {
-				ERROR("send apply index not matched")
-			}
+			assert(rf.log[idx].Index == i, "send apply index not matched")
 			sendMsgs = append(sendMsgs, ApplyMsg{
 				CommandValid: true,
 				Command:      rf.log[idx].Command,

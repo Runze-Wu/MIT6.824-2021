@@ -145,10 +145,7 @@ func (rf *Raft) startNewElection() {
 // append a NOOP entry to its log which will send to other servers
 //
 func (rf *Raft) becomeLeader() {
-	if rf.role != Candidate {
-		rf.printElectionState()
-		ERROR("non-candidate server %d become leader", rf.me)
-	}
+	assert(rf.role == Candidate, "non-candidate server %d become leader", rf.me)
 	NOTICE("Now leader %d for term %d", rf.me, rf.currentTerm)
 	rf.role = Leader
 	rf.persist()

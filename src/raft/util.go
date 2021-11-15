@@ -45,6 +45,12 @@ func VERBOSE(format string, v ...interface{}) {
 	}
 }
 
+func assert(a bool, format string, v ...interface{}) {
+	if Error && !a {
+		ERROR(format, v...)
+	}
+}
+
 func randomElectionTime() time.Duration {
 	return time.Duration(rand.Int())%ElectionTimeout + ElectionTimeout
 }
