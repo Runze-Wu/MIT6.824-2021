@@ -91,6 +91,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.log = append(rf.log, args.Entries[i:]...)
 		rf.persist()
+		break
 	}
 
 	// Set our committed ID from the request's. In rare cases, this would make
