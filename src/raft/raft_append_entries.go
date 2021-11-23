@@ -79,7 +79,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		assert(rf.commitIndex <= rf.getLastLogIndex(), "append RPC: commitIndex larger than log length")
 		rf.printState()
 		VERBOSE("New commitIndex server %d: %d", rf.me, rf.commitIndex)
-		rf.notifyApplyCh <- struct{}{}
+		rf.applyCond.Signal()
 	}
 	rf.setElectionTimer(randomElectionTime())
 }
@@ -219,7 +219,7 @@ func (rf *Raft) advanceCommitIndex() {
 		return
 	}
 	rf.commitIndex = newCommitIndex
-	rf.notifyApplyCh <- struct{}{}
+	rf.applyCond.Signal()
 	VERBOSE("New commitIndex leader %d: %d", rf.me, rf.commitIndex)
 	assert(rf.commitIndex <= rf.getLastLogIndex(), "commitIndex larger than log length")
 }

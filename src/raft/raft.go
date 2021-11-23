@@ -19,11 +19,10 @@ package raft
 
 import (
 	"math/rand"
-	//	"bytes"
 	"sync"
 	"sync/atomic"
+	//	"bytes"
 	"time"
-
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
@@ -57,32 +56,28 @@ type Raft struct {
 	role           Role          // the server's role
 	stopCh         chan bool     // dead signal
 	applyCh        chan ApplyMsg // channel which send apply msg
-	notifyApplyCh  chan struct{} // channel which notify to send apply
-	applyTimer     *time.Timer   // apply msg timer
+	applyCond      *sync.Cond    // cond which notify to send apply
 	electionTimer  *time.Timer   // election time-out timer
 	heartBeatTimer *time.Timer   // appendEntries timer
 
 	/* debug info record lock interval */
-	lockStart time.Time
+	lockStart *time.Timer
 	lockEnd   time.Time
 	lockName  string
 }
 
 func (rf *Raft) lock(lockName string) {
 	rf.mu.Lock()
-	rf.lockStart = time.Now()
+	rf.lockStart = time.NewTimer(MaxLockTime)
 	rf.lockName = lockName
+
 }
 
 func (rf *Raft) unLock(lockName string) {
 	rf.lockEnd = time.Now()
 	assert(rf.lockName == lockName, "lock not matched for %s : %s", rf.lockName, lockName)
 	rf.lockName = ""
-	duration := rf.lockEnd.Sub(rf.lockStart)
-	if rf.lockName != "" && duration > MaxLockTime {
-		rf.printState()
-		ERROR("lock too long:%s:%s", lockName, duration)
-	}
+	rf.lockStart.Reset(MaxLockTime)
 	rf.mu.Unlock()
 }
 
@@ -227,8 +222,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.matchIndex[rf.me] = index // keep its own match index
 		rf.nextIndex[rf.me] = index + 1
 		rf.persist()
+		go rf.replicate()
 	}
-	go rf.replicate()
 	return index, term, isLeader
 }
 
@@ -256,13 +251,31 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) applyThreadMain() {
 	for rf.killed() == false {
-		select {
-		case <-rf.stopCh:
-			return
-		case <-rf.applyTimer.C:
-			rf.notifyApplyCh <- struct{}{}
-		case <-rf.notifyApplyCh:
-			rf.startApply()
+		rf.mu.Lock()
+		for rf.lastApplied >= rf.commitIndex {
+			rf.applyCond.Wait()
+		}
+		var sendMsgs []ApplyMsg
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			idx := rf.getIdx(i)
+			assert(rf.log[idx].Index == i, "send apply index not matched")
+			sendMsgs = append(sendMsgs, ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[idx].Command,
+				CommandTerm:  rf.log[idx].Term,
+				CommandIndex: rf.log[idx].Index,
+			})
+		}
+		rf.mu.Unlock()
+		for _, msg := range sendMsgs {
+			rf.applyCh <- msg
+			rf.lock("SendMsg")
+			if rf.lastApplied < msg.CommandIndex {
+				rf.printState()
+				VERBOSE("send %v idx:%d", msg.Command, msg.CommandIndex)
+				rf.lastApplied = msg.CommandIndex
+			}
+			rf.unLock("SendMsg")
 		}
 	}
 }
@@ -270,7 +283,6 @@ func (rf *Raft) applyThreadMain() {
 func (rf *Raft) startApply() {
 	rf.lock("StartApply")
 	var sendMsgs []ApplyMsg
-	rf.applyTimer.Reset(ApplyInterval)
 	if rf.commitIndex > rf.lastApplied {
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			idx := rf.getIdx(i)
@@ -289,9 +301,11 @@ func (rf *Raft) startApply() {
 	for _, msg := range sendMsgs {
 		rf.applyCh <- msg
 		rf.lock("SendMsg")
-		rf.printState()
-		VERBOSE("send %v idx:%d", msg.Command, msg.CommandIndex)
-		rf.lastApplied = msg.CommandIndex
+		if rf.lastApplied < msg.CommandIndex {
+			rf.printState()
+			VERBOSE("send %v idx:%d", msg.Command, msg.CommandIndex)
+			rf.lastApplied = msg.CommandIndex
+		}
 		rf.unLock("SendMsg")
 	}
 }
@@ -326,17 +340,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		matchIndex:     make([]int, len(peers)),
 		stopCh:         make(chan bool),
 		applyCh:        applyCh,
-		notifyApplyCh:  make(chan struct{}, 100),
-		applyTimer:     time.NewTimer(ApplyInterval),
 		electionTimer:  time.NewTimer(randomElectionTime()),
 		heartBeatTimer: time.NewTimer(HeartBeatTimeout),
 	}
+	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.readPersist(persister.ReadRaftState())
 	// Your initialization code here (2A, 2B, 2C).
 	rf.stopHeartBeatTimer()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
