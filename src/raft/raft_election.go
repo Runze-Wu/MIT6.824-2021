@@ -13,7 +13,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	lastLogTerm := rf.getLogByIndex(lastLogIndex).Term
 	logIsOk := (args.LastLogTerm > lastLogTerm) ||
 		(args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
-	rf.printElectionState()
+	rf.printState()
 	NOTICE("RequestVote %v", args)
 	if args.Term > rf.currentTerm {
 		NOTICE("Received RequestVote request from server %d in term %d "+
@@ -28,7 +28,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.stepDown(rf.currentTerm)
 			rf.setElectionTimer(randomElectionTime())
 			rf.voteFor = args.CandidateId
-			rf.printElectionState()
+			rf.printState()
 		}
 	}
 
@@ -82,7 +82,7 @@ func (rf *Raft) startNewElection() {
 	rf.role = Candidate
 	rf.voteFor = rf.me
 	rf.persist()
-	rf.printElectionState()
+	rf.printState()
 	electionDuration := randomElectionTime()
 	rf.setElectionTimer(electionDuration)
 	rf.stopHeartBeatTimer()
@@ -149,7 +149,7 @@ func (rf *Raft) becomeLeader() {
 	NOTICE("Now leader %d for term %d", rf.me, rf.currentTerm)
 	rf.role = Leader
 	rf.persist()
-	rf.printElectionState()
+	rf.printState()
 	rf.stopElectionTimer() // leader no need to election
 	rf.setHeartBeatTimer()
 	for i := range rf.nextIndex {

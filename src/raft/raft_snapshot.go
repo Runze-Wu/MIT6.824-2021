@@ -23,7 +23,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	rf.log[0].Index, rf.log[0].Term = lastIncludedIndex, lastIncludedTerm
 	rf.commitIndex, rf.lastApplied = rf.log[0].Index, rf.log[0].Index
 	VERBOSE("CondInstallSnapshot called")
-	rf.printElectionState()
+	rf.printState()
 	rf.persister.SaveStateAndSnapshot(rf.getRaftState(), snapshot)
 	return true
 }
@@ -43,7 +43,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log = shrinkEntriesArray(rf.log[index-snapshotIndex:])
 	rf.log[0].EntryType = SnapShot
 	VERBOSE("Snapshot called")
-	rf.printElectionState()
+	rf.printState()
 	rf.persister.SaveStateAndSnapshot(rf.getRaftState(), snapshot)
 }
 
