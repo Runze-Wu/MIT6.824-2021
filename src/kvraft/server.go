@@ -41,7 +41,7 @@ func (kv *KVServer) Command(args *CommandArgs, reply *CommandReply) {
 		return
 	}
 	kv.mu.Lock()
-	notifyCh := kv.getNotifyChan(index, true)
+	notifyCh := kv.getNotifyChan(index)
 	kv.mu.Unlock()
 
 	select {
@@ -50,7 +50,6 @@ func (kv *KVServer) Command(args *CommandArgs, reply *CommandReply) {
 	case <-time.After(ExecuteTimeOut):
 		reply.Err = ErrTimeOut
 	}
-
 	go func(index int) {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
@@ -63,11 +62,8 @@ func (kv *KVServer) isDuplicated(args *CommandArgs) bool {
 	return ok && opContext.MaxAppliedId >= args.CommandId
 }
 
-func (kv *KVServer) getNotifyChan(index int, create bool) chan *CommandReply {
-	if _, ok := kv.notifyChannels[index]; create && ok {
-		ERROR("channel for index %d already exists", index)
-	}
-	if create {
+func (kv *KVServer) getNotifyChan(index int) chan *CommandReply {
+	if _, ok := kv.notifyChannels[index]; !ok {
 		kv.notifyChannels[index] = make(chan *CommandReply, 1)
 	}
 	return kv.notifyChannels[index]
@@ -123,12 +119,12 @@ func (kv *KVServer) applier() {
 			// notify related channel which log added in the current leader
 			if currentTerm, isLeader := kv.rf.GetState(); isLeader && applyMsg.CommandTerm == currentTerm {
 				NOTICE("{Leader %v} reply command %v", kv.me, op.CommandArgs)
-				ch := kv.getNotifyChan(applyMsg.CommandIndex, false)
+				ch := kv.getNotifyChan(applyMsg.CommandIndex)
 				ch <- reply
 			}
 			kv.mu.Unlock()
 		} else if applyMsg.SnapshotValid {
-
+			ERROR("have not implemented")
 		} else {
 			ERROR("illegal applyMsg:%v", applyMsg)
 		}
