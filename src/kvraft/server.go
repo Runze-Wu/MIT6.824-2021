@@ -4,46 +4,73 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
-	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
-const Debug = false
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
-
-
-type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
-}
-
 type KVServer struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int // snapshot if log grows this big
-
+	lastApplied    int                        // highest CommandIndex received, e.g. max(rf.lastApplied)
+	stateMachine   KVStateMachine             // the stateMachine
+	maxraftstate   int                        // snapshot if log grows this big
+	clientLastOp   map[int64]OpContext        // used to filter out duplicate requests
+	notifyChannels map[int]chan *CommandReply // notify the log with the index has applied
 	// Your definitions here.
 }
 
+func (kv *KVServer) Command(args *CommandArgs, reply *CommandReply) {
+	NOTICE("{Server %v} process Command:%v", kv.me, args)
+	kv.mu.RLock()
+	if args.OpType != OpGet && kv.isDuplicated(args) {
+		lastReply := kv.clientLastOp[args.ClientId].Reply
+		reply.Value, reply.Err = lastReply.Value, lastReply.Err
+		NOTICE("Duplicated command:%v", args)
+		kv.mu.RUnlock()
+		return
+	}
+	kv.mu.RUnlock()
+	index, _, isLeader := kv.rf.Start(Op{args})
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	kv.mu.Lock()
+	notifyCh := kv.getNotifyChan(index, true)
+	kv.mu.Unlock()
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	select {
+	case result := <-notifyCh:
+		reply.Value, reply.Err = result.Value, result.Err
+	case <-time.After(ExecuteTimeOut):
+		reply.Err = ErrTimeOut
+	}
+
+	go func(index int) {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		delete(kv.notifyChannels, index)
+	}(index) // remove outdated notify channel to reduce memory footprint
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+func (kv *KVServer) isDuplicated(args *CommandArgs) bool {
+	opContext, ok := kv.clientLastOp[args.ClientId]
+	return ok && opContext.MaxAppliedId >= args.CommandId
+}
+
+func (kv *KVServer) getNotifyChan(index int, create bool) chan *CommandReply {
+	if _, ok := kv.notifyChannels[index]; create && ok {
+		ERROR("channel for index %d already exists", index)
+	}
+	if create {
+		kv.notifyChannels[index] = make(chan *CommandReply, 1)
+	}
+	return kv.notifyChannels[index]
 }
 
 //
@@ -67,6 +94,60 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+// applier read message from apply ch and apply committed entries and snapshot to stateMachine
+func (kv *KVServer) applier() {
+	for kv.killed() == false {
+		applyMsg := <-kv.applyCh
+		//NOTICE("{Server %v} applying msg %v", kv.me, applyMsg)
+		if applyMsg.CommandValid {
+			kv.mu.Lock()
+			if applyMsg.CommandIndex <= kv.lastApplied {
+				NOTICE("{Server %d} discards staled message, commandIndex %d while lastApplied %d", kv.me, applyMsg.CommandIndex, kv.lastApplied)
+				kv.mu.Unlock()
+				continue
+			}
+			kv.lastApplied = applyMsg.CommandIndex
+
+			reply := &CommandReply{}
+			op := applyMsg.Command.(Op)
+			if op.OpType != OpGet && kv.isDuplicated(op.CommandArgs) {
+				NOTICE("{Server %v} doesn't apply duplicated msg %v", kv.me, op.CommandArgs)
+				reply = kv.clientLastOp[op.ClientId].Reply
+			} else {
+				reply = kv.applyCommand(op.CommandArgs)
+				if op.OpType != OpGet {
+					kv.clientLastOp[op.ClientId] = OpContext{op.CommandId, reply}
+				}
+			}
+
+			// notify related channel which log added in the current leader
+			if currentTerm, isLeader := kv.rf.GetState(); isLeader && applyMsg.CommandTerm == currentTerm {
+				NOTICE("{Leader %v} reply command %v", kv.me, op.CommandArgs)
+				ch := kv.getNotifyChan(applyMsg.CommandIndex, false)
+				ch <- reply
+			}
+			kv.mu.Unlock()
+		} else if applyMsg.SnapshotValid {
+
+		} else {
+			ERROR("illegal applyMsg:%v", applyMsg)
+		}
+	}
+}
+
+func (kv *KVServer) applyCommand(args *CommandArgs) *CommandReply {
+	reply := &CommandReply{}
+	switch args.OpType {
+	case OpPut:
+		reply.Err = kv.stateMachine.KVPut(args.Key, args.Value)
+	case OpAppend:
+		reply.Err = kv.stateMachine.KVAppend(args.Key, args.Value)
+	case OpGet:
+		reply.Value, reply.Err = kv.stateMachine.KVGet(args.Key)
+	}
+	return reply
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
@@ -85,17 +166,20 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-
-	kv := new(KVServer)
-	kv.me = me
-	kv.maxraftstate = maxraftstate
-
+	applyCh := make(chan raft.ApplyMsg)
+	kv := &KVServer{
+		mu:             sync.RWMutex{},
+		me:             me,
+		rf:             raft.Make(servers, me, persister, applyCh),
+		applyCh:        applyCh,
+		dead:           0,
+		lastApplied:    0,
+		stateMachine:   &KVMemory{KVmap: make(map[string]string)},
+		maxraftstate:   maxraftstate,
+		clientLastOp:   make(map[int64]OpContext),
+		notifyChannels: make(map[int]chan *CommandReply),
+	}
 	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
-
+	go kv.applier()
 	return kv
 }
