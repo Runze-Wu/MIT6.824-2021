@@ -29,60 +29,6 @@ import (
 )
 
 //
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-//
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
-
-type EntryType int
-
-const (
-	Unknown  EntryType = 0
-	Data     EntryType = 1
-	Noop     EntryType = 2
-	SnapShot EntryType = 3
-)
-
-type Log struct {
-	EntryType EntryType
-	Command   interface{}
-	Term      int
-	Index     int
-}
-
-type Role int
-
-const (
-	Follower  Role = 0
-	Candidate Role = 1
-	Leader    Role = 2
-)
-
-const (
-	ElectionTimeout  = time.Millisecond * 300 // election
-	HeartBeatTimeout = time.Millisecond * 150 // send no more than ten times per sec
-	ApplyInterval    = time.Millisecond * 100 // apply log
-	MaxLockTime      = time.Millisecond * 10  // debug
-)
-
-//
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
@@ -134,7 +80,7 @@ func (rf *Raft) unLock(lockName string) {
 	rf.lockName = ""
 	duration := rf.lockEnd.Sub(rf.lockStart)
 	if rf.lockName != "" && duration > MaxLockTime {
-		rf.printElectionState()
+		rf.printState()
 		ERROR("lock too long:%s:%s", lockName, duration)
 	}
 	rf.mu.Unlock()
@@ -229,11 +175,11 @@ func (rf *Raft) stepDown(newTerm int) {
 		rf.currentTerm = newTerm
 		rf.voteFor = -1
 		rf.role = Follower
-		rf.printElectionState()
+		rf.printState()
 	} else {
 		if rf.role != Follower {
 			rf.role = Follower
-			rf.printElectionState()
+			rf.printState()
 		}
 	}
 	if isLeader {
@@ -245,19 +191,10 @@ func (rf *Raft) stepDown(newTerm int) {
 //
 // print server's useful state info
 //
-func (rf *Raft) printElectionState() {
-	s := ""
-	switch rf.role {
-	case Follower:
-		s = "FOLLOWER"
-	case Candidate:
-		s = "CANDIDATE"
-	case Leader:
-		s = "LEADER"
-	}
-	NOTICE("server=%d, term=%d, role=%s, vote=%d, "+
-		"commit=%d, applied=%d, snap=%v",
-		rf.me, rf.currentTerm, s, rf.voteFor, rf.commitIndex, rf.lastApplied, rf.getSnapshot())
+func (rf *Raft) printState() {
+	NOTICE("server=%v, term=%v, role=%v, vote=%v, "+
+		"commit=%v, applied=%v, snap=%v",
+		rf.me, rf.currentTerm, rf.role, rf.voteFor, rf.commitIndex, rf.lastApplied, rf.getSnapshot())
 }
 
 //
@@ -291,6 +228,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.nextIndex[rf.me] = index + 1
 		rf.persist()
 	}
+	go rf.replicate()
 	return index, term, isLeader
 }
 
@@ -340,6 +278,7 @@ func (rf *Raft) startApply() {
 			sendMsgs = append(sendMsgs, ApplyMsg{
 				CommandValid: true,
 				Command:      rf.log[idx].Command,
+				CommandTerm:  rf.log[idx].Term,
 				CommandIndex: rf.log[idx].Index,
 			})
 		}
@@ -350,7 +289,7 @@ func (rf *Raft) startApply() {
 	for _, msg := range sendMsgs {
 		rf.applyCh <- msg
 		rf.lock("SendMsg")
-		rf.printElectionState()
+		rf.printState()
 		VERBOSE("send %v idx:%d", msg.Command, msg.CommandIndex)
 		rf.lastApplied = msg.CommandIndex
 		rf.unLock("SendMsg")

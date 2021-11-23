@@ -35,7 +35,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.getLogByIndex(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.FirstIndex = args.PrevLogIndex
 		reply.ConflictTerm = rf.getLogByIndex(reply.FirstIndex).Term
-		rf.printElectionState()
+		rf.printState()
 		VERBOSE("Rejecting AppendEntries RPC: terms don't agree %d:%d vs %d:%d",
 			reply.FirstIndex, reply.ConflictTerm, args.PrevLogIndex, args.PrevLogTerm)
 		for i := reply.FirstIndex - 1; i > rf.commitIndex; i-- {
@@ -77,7 +77,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.commitIndex < args.LeaderCommit {
 		rf.commitIndex = args.LeaderCommit
 		assert(rf.commitIndex <= rf.getLastLogIndex(), "append RPC: commitIndex larger than log length")
-		rf.printElectionState()
+		rf.printState()
 		VERBOSE("New commitIndex server %d: %d", rf.me, rf.commitIndex)
 		rf.notifyApplyCh <- struct{}{}
 	}
@@ -219,6 +219,7 @@ func (rf *Raft) advanceCommitIndex() {
 		return
 	}
 	rf.commitIndex = newCommitIndex
+	rf.notifyApplyCh <- struct{}{}
 	VERBOSE("New commitIndex leader %d: %d", rf.me, rf.commitIndex)
 	assert(rf.commitIndex <= rf.getLastLogIndex(), "commitIndex larger than log length")
 }
