@@ -11,7 +11,7 @@ import (
 
 const (
 	Error   bool = true
-	Warning bool = true
+	Warning bool = false
 	Notice  bool = false
 	Verbose bool = false
 )
@@ -80,6 +80,90 @@ func quorumMin(matchIndex []int) int {
 	return temp[(len(temp)-1)/2]
 }
 
+type ApplyMsg struct {
+	CommandValid bool
+	Command      interface{}
+	CommandTerm  int
+	CommandIndex int
+
+	// For 2D:
+	SnapshotValid bool
+	Snapshot      []byte
+	SnapshotTerm  int
+	SnapshotIndex int
+}
+
+func (a ApplyMsg) String() string {
+	if a.CommandValid {
+		return fmt.Sprintf("{Command:%v,CommandTerm:%v,CommandIndex:%v}", a.Command, a.CommandTerm, a.CommandIndex)
+	} else {
+		return fmt.Sprintf("{Snapshot:%v,SnapshotTerm:%v,SnapshotIndex:%v}", a.Snapshot, a.SnapshotTerm, a.SnapshotIndex)
+	}
+}
+
+type EntryType int
+
+const (
+	Unknown  EntryType = 0
+	Data     EntryType = 1
+	Noop     EntryType = 2
+	SnapShot EntryType = 3
+)
+
+func (e EntryType) String() string {
+	switch e {
+	case Unknown:
+		return "Unknown"
+	case Data:
+		return "Data"
+	case Noop:
+		return "Noop"
+	case SnapShot:
+		return "SnapShot"
+	default:
+		panic(fmt.Sprintf("Unknown EntryType:%d", e))
+	}
+}
+
+type Log struct {
+	EntryType EntryType
+	Command   interface{}
+	Term      int
+	Index     int
+}
+
+func (l Log) String() string {
+	return fmt.Sprintf("{EntryType:%v,Command:%v,Term:%v,Index:%v}", l.EntryType, l.Command, l.Term, l.Index)
+}
+
+type Role int
+
+const (
+	Follower  Role = 0
+	Candidate Role = 1
+	Leader    Role = 2
+)
+
+func (r Role) String() string {
+	switch r {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		panic(fmt.Sprintf("Unknown Role:%d", r))
+	}
+}
+
+const (
+	ElectionTimeout  = time.Millisecond * 300 // election
+	HeartBeatTimeout = time.Millisecond * 150 // send no more than ten times per sec
+	ApplyInterval    = time.Millisecond * 100 // apply log
+	MaxLockTime      = time.Millisecond * 10  // debug
+)
+
 type Err string
 
 const (
@@ -87,28 +171,26 @@ const (
 	RPCFail Err = "RPCFail"
 )
 
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
 	Term         int // candidate's term
 	CandidateId  int // candidate requesting vote
 	LastLogIndex int // index of candidate's last log entry
 	LastLogTerm  int // term of candidate's last log entry
 }
 
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
+func (r RequestVoteArgs) String() string {
+	return fmt.Sprintf("{Term:%v,CandidateId:%v,LastLogIndex:%v,LastLogTerm:%v}", r.Term, r.CandidateId, r.LastLogIndex, r.LastLogTerm)
+}
+
 type RequestVoteReply struct {
-	// Your data here (2A).
 	Term        int  // currentTerm, for candidate to update itself
 	VoteGranted bool // true means that candidate received vote
 	Err         Err  // indicate whether successfully delivered
 	Server      int  // the RPC's receiver
+}
+
+func (r RequestVoteReply) String() string {
+	return fmt.Sprintf("{Term:%v,VoteGranted:%v,Err:%v,Server:%v}", r.Term, r.VoteGranted, r.Err, r.Server)
 }
 
 type AppendEntriesArgs struct {
@@ -120,11 +202,19 @@ type AppendEntriesArgs struct {
 	LeaderCommit int   // leader's commitIndex
 }
 
+func (a AppendEntriesArgs) String() string {
+	return fmt.Sprintf("{Term:%v,LeaderId:%v,PrevLogIndex:%v,PrevLogTerm:%v,Entries:%v,LeaderCommit:%v}", a.Term, a.LeaderId, a.PrevLogIndex, a.PrevLogTerm, a.Entries, a.LeaderCommit)
+}
+
 type AppendEntriesReply struct {
 	Term         int  // currentTerm, for leader to update itself
 	Success      bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 	FirstIndex   int  // the first log's index which has the same term as the conflict one
 	ConflictTerm int  // the conflict log's term
+}
+
+func (a AppendEntriesReply) String() string {
+	return fmt.Sprintf("{Term:%v,Success:%v,FirstIndex:%v,ConflictTerm:%v}", a.Term, a.Success, a.FirstIndex, a.ConflictTerm)
 }
 
 type InstallSnapshotArgs struct {
@@ -135,6 +225,14 @@ type InstallSnapshotArgs struct {
 	Data              []byte // raw bytes of the snapshot chunk
 }
 
+func (a InstallSnapshotArgs) String() string {
+	return fmt.Sprintf("{Term:%v,LeaderId:%v,LastIncludedIndex:%v,LastIncludedTerm:%v,Data:%v}", a.Term, a.LeaderId, a.LastIncludedIndex, a.LastIncludedTerm, a.Data)
+}
+
 type InstallSnapshotReply struct {
 	Term int // currentTerm, for leader to update itself
+}
+
+func (r InstallSnapshotReply) String() string {
+	return fmt.Sprintf("{Term:%v}", r.Term)
 }
