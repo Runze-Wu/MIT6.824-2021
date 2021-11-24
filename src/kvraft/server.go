@@ -4,6 +4,7 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,12 +123,54 @@ func (kv *KVServer) applier() {
 				ch := kv.getNotifyChan(applyMsg.CommandIndex)
 				ch <- reply
 			}
+
+			if kv.needSnapShot() {
+				kv.takeSnapShot(applyMsg.CommandIndex)
+			}
 			kv.mu.Unlock()
 		} else if applyMsg.SnapshotValid {
-			ERROR("have not implemented")
+			kv.mu.Lock()
+			if kv.rf.CondInstallSnapshot(applyMsg.SnapshotTerm, applyMsg.SnapshotIndex, applyMsg.Snapshot) {
+				kv.readSnapShot(applyMsg.Snapshot)
+				kv.lastApplied = applyMsg.SnapshotIndex
+			}
+			kv.mu.Unlock()
 		} else {
 			ERROR("illegal applyMsg:%v", applyMsg)
 		}
+	}
+}
+
+func (kv *KVServer) getKVSnapShot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.stateMachine)
+	e.Encode(kv.clientLastOp)
+	return w.Bytes()
+}
+
+func (kv *KVServer) needSnapShot() bool {
+	return kv.maxraftstate != -1 && kv.maxraftstate <= kv.rf.GetRaftStateSize()
+}
+
+func (kv *KVServer) takeSnapShot(index int) {
+	kv.rf.Snapshot(index, kv.getKVSnapShot())
+}
+
+func (kv *KVServer) readSnapShot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var stateMachine *KVMemory
+	var clientLastOp map[int64]OpContext
+
+	if d.Decode(&stateMachine) != nil || d.Decode(&clientLastOp) != nil {
+		ERROR("read snapshot failed")
+	} else {
+		kv.stateMachine = stateMachine
+		kv.clientLastOp = clientLastOp
 	}
 }
 
@@ -175,6 +218,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 		clientLastOp:   make(map[int64]OpContext),
 		notifyChannels: make(map[int]chan *CommandReply),
 	}
+	kv.readSnapShot(persister.ReadSnapshot())
 	// You may need initialization code here.
 	go kv.applier()
 	return kv
