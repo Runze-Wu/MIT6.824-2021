@@ -5,6 +5,12 @@ import (
 	"bytes"
 )
 
+func (rf *Raft) GetRaftStateSize() int {
+	rf.lock("getRaftStateSize")
+	defer rf.unLock("getRaftStateSize")
+	return rf.persister.RaftStateSize()
+}
+
 func (rf *Raft) getRaftState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
